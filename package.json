@@ -1,0 +1,11 @@
+{
+  "name": "localhost",
+  "main": "main.js",
+  "author": "Vitaliy Fust <aslok.zp@gmail.com>",
+  "private": true,
+  "dependencies": {
+    "file-type": "^16.5.0",
+    "highlight.js": "^11.0.1",
+    "read-last-lines": "^1.8.0"
+  }
+}
