@@ -17,103 +17,106 @@ const header =
     '</head><body><img style="float:right;" src="/best.gif"><pre>';
 const footer = '</pre></body></html>';
 
+const isReadable = path => new Promise((resolve, reject) =>
+    fs.access(path, fs.constants.R_OK, err =>
+        !err ? resolve(path) : reject()
+    )
+);
+
 const isDir = path => new Promise(resolve =>
     fs.stat(path, (err, stats) =>
-        resolve(!err && stats.isDirectory()))
+        resolve(!err && stats.isDirectory())
+    )
 );
 
-const getFile = path => new Promise(resolve =>
-    fs.access(path, err => {
-        if (err) {
-            resolve('');
-        }
+const fileContent = (path, type) => new Promise(resolve =>
+    type === undefined ?
         fs.readFile(path, 'binary', (err, data) =>
-            resolve(data.toString())
-        )
-    })
+            resolve({type: type, content: data.toString()})
+        ) : resolve({type: type, content: fs.createReadStream(path)})
 );
 
-const getDir = (path, fullUrl = "") => new Promise(resolve =>
+const dirContent = (path, fullUrl = '') => new Promise(resolve =>
     fs.readdir(path, (err, files) => {
         let html = '</pre>';
         for (let file in files) {
             html += `<a href="${ fullUrl }/${ files[file] }">${ files[file] }</a><br>`;
         }
         html += '<pre>';
-        resolve(html);
+        resolve({type: 'DIR', content: html});
     })
 );
 
-const getContent = async fullUrl => new Promise(resolve => {
-    const path = `${ home }${ fullUrl }`;
-    isDir(path).then(isDir => {
-        if (!isDir) {
-            Promise.all([
-                fileType(path),
-                getFile(path)
-            ]).then(values => {
-                let type = values.shift();
-                let content = values.shift();
-                resolve({
-                    type: type ? type.mime : type,
-                    content: content
-                });
-            });
-        } else {
-            getDir(path, fullUrl).then(content => resolve({
-                type: 'DIR',
-                content: content
-            }));
+const getContent = fullUrl => new Promise(resolve => {
+    const path = home + fullUrl;
+    isReadable(path).then(isDir).then(isDirectory => {
+        if (isDirectory) {
+            dirContent(path, fullUrl).then(resolve);
+            return;
         }
-    });
+        if (path === home + style) {
+            fileContent(path, 'text/css').then(resolve);
+            return;
+        }
+        fileType(path).then(type => fileContent(path, type ? type.mime : type)).then(resolve);
+    }).catch(() => resolve({
+        type: undefined,
+        content: ''
+    }));
 });
 
 const getUp = url =>
     '--------------------------------\n' +
     `<h4><a href="${ url }">..</a></h4>`;
 
-const getStatus = async () =>
-    '--------------------------------\n' +
-    `Running at http://${ hostname }:${ port }/\n\n` +
-    '---------- Server log ----------\n' +
-    await readLastLines(process.env.pm_out_log_path, 1) + '\n' +
-    '------------ Errors ------------\n' +
-    await readLastLines(process.env.pm_err_log_path, 20) + '\n';
+const getStatus = () => new Promise(resolve => {
+    const status =
+        '--------------------------------\n' +
+        `Running at http://${ hostname }:${ port }/\n\n`;
+    Promise.all([
+        readLastLines(process.env.pm_out_log_path, 1),
+        readLastLines(process.env.pm_err_log_path, 20)
+    ]).then(([out, errors]) => {
+        resolve(status +
+            '---------- Server log ----------\n' +
+            out + '\n' +
+            '------------ Errors ------------\n' +
+            errors + '\n'
+        );
+    }).catch(() => resolve(status));
+});
 
 const server = http.createServer((req, res) => {
     // Emitted each time there is a request
     let fullUrl = req.url.replace(/\/$/, '');
-    const sendContent = async result => {
-        if (fullUrl === style) {
-            result.type = 'text/css';
-        }
+    const sendContent = ([data, status]) => {
         res.statusCode = 200;
-        switch (result.type) {
+        switch (data.type) {
             case undefined:
-            case 'text/html':
-                result.content = highlight(result.content).value;
+                data.content = highlight(data.content).value;
             case 'DIR':
-                let onRoot = !fullUrl;
                 res.setHeader('Content-Type', 'text/html');
                 res.end(
                     header +
                     '-------- Hello world! =) -------\n' +
-                    `<h3>It is ${ fullUrl ? fullUrl : "/" }</h3>` +
-                    (!onRoot ? getUp(dirname(fullUrl)) : "") +
-                    result.content +
-                    (onRoot ? await getStatus() : "") +
+                    `<h3>It is ${ fullUrl ? fullUrl : '/' }</h3>` +
+                    (fullUrl ? getUp(dirname(fullUrl)) : '') +
+                    data.content +
+                    (status ? status : '') +
                     '----------- The End! -----------\n' +
                     footer
                 );
                 break;
-            case 'text/css':
             default:
-                res.setHeader('Content-Type', result.type);
-                res.end(result.content, 'binary');
+                res.setHeader('Content-Type', data.type);
+                data.content.pipe(res);
         }
     };
 
-    getContent(fullUrl).then(sendContent);
+    Promise.all([
+        getContent(fullUrl),
+        !fullUrl ? getStatus() : ''
+    ]).then(sendContent);
 });
 
 server.listen(
